@@ -1,0 +1,12 @@
+{
+  "name": "sse-bun-test",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "test": "BUN_CONFIG_MAX_HTTP_REQUESTS=65336 bun run sseLoadTest.ts",
+    "test:quick": "BUN_CONFIG_MAX_HTTP_REQUESTS=65336 LOAD_TEST_CONNECTIONS=1000 LOAD_TEST_RAMP_UP_MS=5000 LOAD_TEST_HOLD_MS=3000 THROUGHPUT_DURATION_MS=15000 bun run sseLoadTest.ts"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  }
+}
