@@ -47,31 +47,14 @@ function handleSSEStream(req: Request): Response {
 
   const roomName = buildRoomName(auth.shopId, auth.branchId);
 
-  let heartbeat: ReturnType<typeof setInterval>;
   let client: ReturnType<typeof addClient>;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       client = addClient(controller, roomName);
-
-      // Send connected event immediately
       sendEvent(client, 'connected', { clientId: client.id, room: roomName });
-
-      // Heartbeat every 5s to stay under Bun's default 10s idleTimeout
-      heartbeat = setInterval(() => {
-        if (!client.closed) {
-          try {
-            controller.enqueue(new TextEncoder().encode(': heartbeat\n\n'));
-          } catch {
-            clearInterval(heartbeat);
-          }
-        } else {
-          clearInterval(heartbeat);
-        }
-      }, 5_000);
     },
     cancel() {
-      clearInterval(heartbeat);
       removeClient(client.id);
     },
   });
