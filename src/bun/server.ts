@@ -6,36 +6,18 @@ import {
   getClientCount,
 } from './sse';
 
-// --- Config ---
 const MOCK_SHOP_ID = 'a0000000-0000-0000-0000-000000000001';
 const MOCK_BRANCH_ID = 'b0000000-0000-0000-0000-000000000001';
 
 let authCounter = 0;
 
-// --- Auth (simplified mock) ---
-interface AuthContext {
-  userId: string;
-  shopId: string;
-  branchId: string;
-  roleId: string;
-  deviceId: string;
-}
-
-function authenticate(req: Request): AuthContext | null {
+function authenticate(req: Request): { shopId: string; branchId: string } | null {
   const authHeader = req.headers.get('authorization');
   if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-
   authCounter++;
-  return {
-    userId: `u0000000-0000-0000-0000-${String(authCounter).padStart(12, '0')}`,
-    shopId: MOCK_SHOP_ID,
-    branchId: MOCK_BRANCH_ID,
-    roleId: `r0000000-0000-0000-0000-${String(authCounter).padStart(12, '0')}`,
-    deviceId: `d0000000-0000-0000-0000-${String(authCounter).padStart(12, '0')}`,
-  };
+  return { shopId: MOCK_SHOP_ID, branchId: MOCK_BRANCH_ID };
 }
 
-// --- SSE handler ---
 function handleSSEStream(req: Request): Response {
   const auth = authenticate(req);
   if (!auth) {
@@ -46,7 +28,6 @@ function handleSSEStream(req: Request): Response {
   }
 
   const roomName = buildRoomName(auth.shopId, auth.branchId);
-
   let client: ReturnType<typeof addClient>;
 
   const stream = new ReadableStream<Uint8Array>({
@@ -70,8 +51,7 @@ function handleSSEStream(req: Request): Response {
   });
 }
 
-// --- Request router ---
-function handleRequest(req: Request): Response {
+export function handleRequest(req: Request): Response {
   const url = new URL(req.url);
 
   if (req.method === 'GET' && url.pathname === '/api/events/stream/') {
@@ -83,21 +63,4 @@ function handleRequest(req: Request): Response {
   }
 
   return new Response('Not Found', { status: 404 });
-}
-
-// --- Exports for testing ---
-export { handleRequest, MOCK_SHOP_ID, MOCK_BRANCH_ID };
-export { broadcast, buildRoomName, closeAllClients, getClientCount } from './sse';
-
-// --- Start server if run directly ---
-if (import.meta.main) {
-  const PORT = Number(process.env.PORT) || 3000;
-  const server = Bun.serve({
-    port: PORT,
-    fetch: handleRequest,
-    // no idleTimeout — 5s heartbeat keeps connections alive under default 10s
-  });
-  console.log(`SSE server running on http://localhost:${server.port}`);
-  console.log(`  Stream:  GET /api/events/stream/`);
-  console.log(`  Health:  GET /health`);
 }

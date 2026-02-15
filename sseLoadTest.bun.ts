@@ -1,17 +1,16 @@
 /**
- * SSE Load Test — Node (Express, native res.write)
+ * SSE Load Test — Bun (raw Bun.serve, native ReadableStream)
  *
  * Usage:
- *   tsx sseLoadTest.node.ts
+ *   BUN_CONFIG_MAX_HTTP_REQUESTS=65336 bun run sseLoadTest.bun.ts
  */
-import { app } from './src/node/server';
+import { handleRequest } from './src/bun/server';
 import {
   broadcast,
   buildRoomName,
   closeAllClients,
   getClientCount,
-} from './src/node/sse';
-import type { Server } from 'node:http';
+} from './src/bun/sse';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -161,13 +160,11 @@ function cleanup(conns: SSEConn[]): void {
 }
 
 // ---------------------------------------------------------------------------
-// Server — Express on Node
+// Server — raw Bun.serve()
 // ---------------------------------------------------------------------------
-const server: Server = await new Promise((resolve) => {
-  const s = app.listen(0, () => resolve(s));
-});
-const port = (server.address() as any).port;
-console.log(`SSE Load Test (Node/Express) on port ${port}\n`);
+const server = Bun.serve({ port: 0, fetch: handleRequest, idleTimeout: 255 });
+const port = server.port;
+console.log(`SSE Load Test (Bun) on port ${port}\n`);
 
 let allPassed = true;
 
@@ -236,7 +233,7 @@ async function testMassConnections(): Promise<SSEConn[]> {
 
   const receivePromises = conns.map((c) => waitForSSEEvent(c, 'entity-event', MESSAGE_TIMEOUT_MS));
   const broadcastStart = Date.now();
-  const sentCount = broadcast(broadcastRoom, broadcastPayload);
+  const sentCount = await broadcast(broadcastRoom, broadcastPayload);
   const results = await Promise.all(receivePromises);
   const broadcastMs = Date.now() - broadcastStart;
 
@@ -328,7 +325,7 @@ async function testThroughput(existingConns: SSEConn[]): Promise<void> {
         triggeredBy: null,
       },
     };
-    broadcast(broadcastRoom, payload);
+    await broadcast(broadcastRoom, payload);
 
     const elapsed = Date.now() - testStart;
     const nextTime = messageId * intervalMs;
@@ -378,7 +375,7 @@ try {
   const conns = await testMassConnections();
   await testThroughput(conns);
 } finally {
-  server.close();
+  server.stop(true);
 }
 
 console.log(`\n${'='.repeat(60)}`);

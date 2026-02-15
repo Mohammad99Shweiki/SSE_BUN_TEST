@@ -19,11 +19,8 @@ export interface BroadcastPayload {
   };
 }
 
-// Room -> Set of client IDs
 const rooms = new Map<string, Set<string>>();
-// Client ID -> SSEClient
 const clients = new Map<string, SSEClient>();
-
 const encoder = new TextEncoder();
 let clientIdCounter = 0;
 
@@ -73,11 +70,10 @@ export function removeClient(clientId: string): void {
   clients.delete(clientId);
 }
 
-function writeSSE(client: SSEClient, eventData: string): boolean {
+export function sendEvent(client: SSEClient, event: string, data: unknown): boolean {
   if (client.closed) return false;
   try {
-    // enqueue is synchronous — no backpressure issues
-    client.controller.enqueue(encoder.encode(eventData));
+    client.controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
     return true;
   } catch {
     client.closed = true;
@@ -85,16 +81,13 @@ function writeSSE(client: SSEClient, eventData: string): boolean {
   }
 }
 
-export function sendEvent(client: SSEClient, event: string, data: unknown): boolean {
-  return writeSSE(client, `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-}
-
-export function broadcast(roomName: string, payload: BroadcastPayload): number {
+export async function broadcast(roomName: string, payload: BroadcastPayload): Promise<number> {
   const roomClients = rooms.get(roomName);
   if (!roomClients) return 0;
 
   const eventBytes = encoder.encode(`event: entity-event\ndata: ${JSON.stringify(payload)}\n\n`);
   let sentCount = 0;
+  const BATCH = 500;
 
   for (const clientId of roomClients) {
     const client = clients.get(clientId);
@@ -102,6 +95,9 @@ export function broadcast(roomName: string, payload: BroadcastPayload): number {
     try {
       client.controller.enqueue(eventBytes);
       sentCount++;
+      if (sentCount % BATCH === 0) {
+        await new Promise<void>((r) => setTimeout(r, 0));
+      }
     } catch {
       client.closed = true;
     }
@@ -115,9 +111,7 @@ export function closeAllClients(): void {
     client.closed = true;
     try {
       client.controller.close();
-    } catch {
-      // already closed
-    }
+    } catch {}
   }
   clients.clear();
   rooms.clear();
@@ -126,8 +120,4 @@ export function closeAllClients(): void {
 
 export function getClientCount(): number {
   return clients.size;
-}
-
-export function getRoomClientCount(roomName: string): number {
-  return rooms.get(roomName)?.size ?? 0;
 }
