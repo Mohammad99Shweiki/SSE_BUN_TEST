@@ -30,15 +30,15 @@ function handleSSEStream(req: Request): Response {
   const roomName = buildRoomName(auth.shopId, auth.branchId);
   let client: ReturnType<typeof addClient>;
 
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
+  const stream = new ReadableStream({
+    type: 'direct',
+    pull(controller: ReadableStreamDirectController) {
       client = addClient(controller, roomName);
       sendEvent(client, 'connected', { clientId: client.id, room: roomName });
+      // Keep stream open until client disconnects
+      return new Promise<void>(() => {});
     },
-    cancel() {
-      removeClient(client.id);
-    },
-  });
+  } as any);
 
   return new Response(stream, {
     status: 200,
