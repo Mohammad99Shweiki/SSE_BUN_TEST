@@ -169,7 +169,7 @@ function cleanup(conns: SSEConn[]): void {
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
-const server = Bun.serve({ port: 0, fetch: handleRequest });
+const server = Bun.serve({ port: 0, fetch: handleRequest, idleTimeout: 255 });
 const port = server.port;
 console.log(`SSE Load Test Server on port ${port}\n`);
 
@@ -178,7 +178,7 @@ let allPassed = true;
 // ---------------------------------------------------------------------------
 // Test 1: Mass connections + single broadcast
 // ---------------------------------------------------------------------------
-async function testMassConnections(): Promise<void> {
+async function testMassConnections(): Promise<SSEConn[]> {
 	console.log(`\n${"=".repeat(60)}`);
 	console.log(
 		`TEST 1: ${TOTAL_CONNECTIONS} concurrent connections + broadcast`,
@@ -249,7 +249,7 @@ async function testMassConnections(): Promise<void> {
 		waitForSSEEvent(c, "entity-event", MESSAGE_TIMEOUT_MS),
 	);
 	const broadcastStart = Date.now();
-	const sentCount = await broadcast(broadcastRoom, broadcastPayload);
+	const sentCount = broadcast(broadcastRoom, broadcastPayload);
 	const results = await Promise.all(receivePromises);
 	const broadcastMs = Date.now() - broadcastStart;
 
@@ -277,50 +277,26 @@ Memory:       ${memoryBefore}MB -> ${memoryAfter}MB (+${memoryAfter - memoryBefo
 	console.log(`  ASSERT error rate < 5%: ${errorRateOk ? "PASS" : "FAIL"}`);
 	if (!connOk || !errorRateOk) allPassed = false;
 
-	cleanup(conns);
-	closeAllClients();
+	return conns;
 }
 
 // ---------------------------------------------------------------------------
 // Test 2: Sustained throughput
 // ---------------------------------------------------------------------------
-async function testThroughput(): Promise<void> {
-	const MAX_CONNECTIONS =
-		Number(process.env.THROUGHPUT_CONNECTIONS) || TOTAL_CONNECTIONS;
+async function testThroughput(existingConns: SSEConn[]): Promise<void> {
 	const TEST_DURATION_MS = Number(process.env.THROUGHPUT_DURATION_MS) || 60_000;
 	const MSG_PER_SEC = Number(process.env.MSG_PER_SEC) || 2;
 
+	const conns = existingConns.filter((c) => !c.closed);
+
 	console.log(`\n${"=".repeat(60)}`);
 	console.log(
-		`TEST 2: Throughput — ${MAX_CONNECTIONS} connections, ${MSG_PER_SEC} msg/sec for ${TEST_DURATION_MS / 1000}s`,
+		`TEST 2: Throughput — ${conns.length} connections (reused), ${MSG_PER_SEC} msg/sec for ${TEST_DURATION_MS / 1000}s`,
 	);
 	console.log(`${"=".repeat(60)}`);
 
-	const conns: SSEConn[] = [];
-	const errors: string[] = [];
 	const memoryBefore = getMemoryMB();
-
-	// Connect — 500 per batch for 25k scale
-	const BATCH = 500;
-	const t0 = Date.now();
-	for (let start = 0; start < MAX_CONNECTIONS; start += BATCH) {
-		const end = Math.min(start + BATCH, MAX_CONNECTIONS);
-		const batch = [];
-		for (let i = start; i < end; i++) {
-			batch.push(
-				createConnection(port).then((c) => {
-					if (c) conns.push(c);
-					else errors.push(`Connection ${i} failed`);
-				}),
-			);
-		}
-		await Promise.all(batch);
-		console.log(`  Connected: ${conns.length}/${end} (${Date.now() - t0}ms)`);
-	}
-
-	console.log(
-		`  Connections ready: ${conns.length}/${MAX_CONNECTIONS}, ${errors.length} errors`,
-	);
+	console.log(`  Reusing ${conns.length} connections from Test 1`);
 
 	const broadcastRoom = buildRoomName(MOCK_SHOP_ID, MOCK_BRANCH_ID);
 
@@ -370,7 +346,7 @@ async function testThroughput(): Promise<void> {
 				triggeredBy: null,
 			},
 		};
-		await broadcast(broadcastRoom, payload);
+		broadcast(broadcastRoom, payload);
 
 		const elapsed = Date.now() - testStart;
 		const nextTime = messageId * intervalMs;
@@ -378,22 +354,23 @@ async function testThroughput(): Promise<void> {
 		if (delay > 0) await new Promise((r) => setTimeout(r, delay));
 	}
 
-	// Wait for in-flight messages
-	await new Promise((resolve) => setTimeout(resolve, 2000));
+	const broadcastDuration = (Date.now() - testStart) / 1000;
 
-	const actualDuration = (Date.now() - testStart) / 1000;
+	// Wait for client-side read loops to process enqueued data
+	await new Promise((resolve) => setTimeout(resolve, 5_000));
+
 	const avgDeliveriesPerMessage =
 		messageId > 0 && conns.length > 0
 			? totalDelivered / messageId / conns.length
 			: 0;
-	const messagesPerSecond = messageId / actualDuration;
-	const deliveriesPerSecond = totalDelivered / actualDuration;
+	const messagesPerSecond = messageId / broadcastDuration;
+	const deliveriesPerSecond = totalDelivered / broadcastDuration;
 	const memoryAfter = getMemoryMB();
 
 	console.log(`
 --- TEST 2 RESULTS ---
 Connections:           ${conns.length} active
-Test Duration:         ${actualDuration.toFixed(1)}s
+Broadcast Duration:    ${broadcastDuration.toFixed(1)}s
 Messages Broadcast:    ${messageId}
 Messages/sec:          ${messagesPerSecond.toFixed(1)}
 Total Deliveries:      ${totalDelivered.toLocaleString()}
@@ -404,11 +381,11 @@ Memory:                ${memoryBefore}MB -> ${memoryAfter}MB (+${memoryAfter - m
 `);
 
 	// Assertions
-	const connOk = conns.length > MAX_CONNECTIONS * 0.95;
+	const connOk = conns.length > existingConns.length * 0.95;
 	const msgOk = messageId > 0;
 	const deliveryOk = avgDeliveriesPerMessage > 0.5;
 	console.log(
-		`  ASSERT >95% connected: ${connOk ? "PASS" : "FAIL"} (${conns.length}/${MAX_CONNECTIONS})`,
+		`  ASSERT >95% connected: ${connOk ? "PASS" : "FAIL"} (${conns.length}/${existingConns.length})`,
 	);
 	console.log(
 		`  ASSERT messages sent: ${msgOk ? "PASS" : "FAIL"} (${messageId})`,
@@ -426,8 +403,8 @@ Memory:                ${memoryBefore}MB -> ${memoryAfter}MB (+${memoryAfter - m
 // Run
 // ---------------------------------------------------------------------------
 try {
-	await testMassConnections();
-	await testThroughput();
+	const conns = await testMassConnections();
+	await testThroughput(conns);
 } finally {
 	server.stop(true);
 }

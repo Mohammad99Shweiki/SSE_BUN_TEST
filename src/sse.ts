@@ -89,13 +89,12 @@ export function sendEvent(client: SSEClient, event: string, data: unknown): bool
   return writeSSE(client, `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-export async function broadcast(roomName: string, payload: BroadcastPayload): Promise<number> {
+export function broadcast(roomName: string, payload: BroadcastPayload): number {
   const roomClients = rooms.get(roomName);
   if (!roomClients) return 0;
 
   const eventBytes = encoder.encode(`event: entity-event\ndata: ${JSON.stringify(payload)}\n\n`);
   let sentCount = 0;
-  let i = 0;
 
   for (const clientId of roomClients) {
     const client = clients.get(clientId);
@@ -105,9 +104,6 @@ export async function broadcast(roomName: string, payload: BroadcastPayload): Pr
       sentCount++;
     } catch {
       client.closed = true;
-    }
-    if (++i % 2000 === 0) {
-      await new Promise<void>(r => setTimeout(r, 0));
     }
   }
 
